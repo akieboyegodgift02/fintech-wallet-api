@@ -1,3 +1,4 @@
+import 'dotenv/config'; // Must be at the very top!
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -6,21 +7,24 @@ import { TypeOrmModule } from '@nestjs/typeorm';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get<string>('DB_HOST'),
-        port: configService.get<number>('DB_PORT'),
-        username: configService.get<string>('DB_USERNAME'),
-        password: configService.get<string>('DB_PASSWORD'),
-        database: configService.get<string>('DB_NAME'),
-        autoLoadEntities: true,
-        synchronize: true, // Set to false in production with migrations
-      }),
+      useFactory: (configService: ConfigService) => {
+        const dbUrl = configService.get<string>('DATABASE_URL') || process.env.DATABASE_URL;
+        console.log('🔍 Database URL Loaded:', dbUrl ? 'SUCCESS ✅' : 'FAILED ❌');
+
+        return {
+          type: 'postgres',
+          url: dbUrl,
+          ssl: {
+            rejectUnauthorized: false, // Required for Neon
+          },
+          autoLoadEntities: true,
+          synchronize: true,
+        };
+      },
     }),
   ],
 })

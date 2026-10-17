@@ -15,14 +15,25 @@ const config: Config = {
   rootDir: '.',
   testRegex: '.*\\.spec\\.ts$',
   transform: {
-    '^.+\\.(t|j)s$': 'ts-jest',
+    '^.+\\.(t|j)s$': [
+      'ts-jest',
+      {
+        useESM: true,
+        tsconfig: {
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          allowJs: true,
+        },
+      },
+    ],
   },
-  moduleNameMapper: pathsToModuleNameMapper(paths, { prefix: '<rootDir>/' }),
-  collectCoverageFrom: [
-    'src/**/*.(t|j)s',
-    'libs/**/*.(t|j)s',
-    'apps/**/*.(t|j)s',
-  ],
+  extensionsToTreatAsEsm: ['.ts'],
+  moduleNameMapper: {
+    ...pathsToModuleNameMapper(paths, { prefix: '<rootDir>/' }),
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+  },
+  transformIgnorePatterns: ['/node_modules/(?!(?:@nestjs|rxjs|uuid|tslib)/)'],
+  collectCoverageFrom: ['src/**/*.(t|j)s'],
   coverageDirectory: './coverage',
   testEnvironment: 'node',
 };
