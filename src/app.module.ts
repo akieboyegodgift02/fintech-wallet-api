@@ -1,31 +1,24 @@
-import 'dotenv/config';
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuthModule } from './auth/auth.module';
+import { WalletModule } from './wallet/wallet.module';
+import { User } from './users/user.entity';
+import { Wallet } from './wallet/wallet.entity';
+import { Transaction } from './wallet/transaction.entity';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
+    ConfigModule.forRoot({ isGlobal: true }),
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      url: process.env.DATABASE_URL,
+      entities: [User, Wallet, Transaction],
+      synchronize: true, // Set to false in production
+      ssl: { rejectUnauthorized: false }, // Required for Neon Cloud
     }),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const dbUrl = configService.get<string>('DATABASE_URL') || process.env.DATABASE_URL;
-        console.log('🔍 Database URL Loaded:', dbUrl ? 'SUCCESS ✅' : 'FAILED ❌');
-
-        return {
-          type: 'postgres',
-          url: dbUrl,
-          ssl: {
-            rejectUnauthorized: false, // Required for Neon
-          },
-          autoLoadEntities: true,
-          synchronize: true,
-        };
-      },
-    }),
+    AuthModule,
+    WalletModule,
   ],
 })
 export class AppModule {}

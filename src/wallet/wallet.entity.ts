@@ -1,6 +1,15 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToOne, JoinColumn, OneToMany } from 'typeorm';
-import type { User } from '../users/user.entity';
-import type { Transaction } from './transaction.entity';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
+import { User } from '../users/user.entity';
+import { Transaction } from './transaction.entity';
 
 @Entity('wallets')
 export class Wallet {
@@ -16,11 +25,14 @@ export class Wallet {
   @Column({ default: false })
   isLocked: boolean;
 
-  @OneToOne('User', (user: User) => user.wallet, { onDelete: 'CASCADE' })
-  @JoinColumn()
+  @ManyToOne(() => User, (user) => user.wallet, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'userId' })
   user: User;
 
-  @OneToMany('Transaction', (transaction: Transaction) => transaction.wallet)
+  @Column()
+  userId: string;
+
+  @OneToMany(() => Transaction, (transaction) => transaction.wallet)
   transactions: Transaction[];
 
   @CreateDateColumn()

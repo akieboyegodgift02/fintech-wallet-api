@@ -1,5 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
-import { Wallet } from './wallet.entity';
+import type { Wallet } from './wallet.entity'; // Type-only import is safe here now!
 
 export enum TransactionType {
   DEPOSIT = 'DEPOSIT',
@@ -37,7 +37,8 @@ export class Transaction {
   @Column({ unique: true })
   reference: string;
 
-  @ManyToOne(() => Wallet, (wallet) => wallet.transactions, { onDelete: 'CASCADE' })
+  // Pass 'Wallet' as a string to avoid circular initialization errors
+  @ManyToOne('Wallet', (wallet: Wallet) => wallet.transactions, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'walletId' })
   wallet: Wallet;
 
