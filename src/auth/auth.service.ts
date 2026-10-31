@@ -1,9 +1,10 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
-import * as bcrypt from 'bcrypt';
 import { User } from '../users/user.entity';
 import { Wallet } from '../wallet/wallet.entity';
+import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
 import { SignupDto } from './dto/signup.dto';
 
 @Injectable()
@@ -11,6 +12,9 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(Wallet)
+    private walletRepository: Repository<Wallet>,
+    private jwtService: JwtService,
     private dataSource: DataSource,
   ) {}
 
@@ -20,48 +24,78 @@ export class AuthService {
     // Check if user already exists
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
-      throw new ConflictException('Email is already registered');
+      throw new BadRequestException('User with this email already exists');
     }
 
-    // Hash password securely
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
 
-    // Use QueryRunner to ensure atomic User + Wallet creation
+    // Use QueryRunner to ensure atomic user signup and default wallet provisioning
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 1. Create User
       const user = queryRunner.manager.create(User, {
         email,
-        passwordHash: hashedPassword,
+        passwordHash,
       });
-      await queryRunner.manager.save(user);
+      const savedUser = await queryRunner.manager.save(user);
 
-      // 2. Automatically provision default Wallet
+      // Auto-provision a default USD wallet for the new user
       const wallet = queryRunner.manager.create(Wallet, {
         balance: 0.00,
         currency: 'USD',
-        user: user,
+        userId: savedUser.id,
       });
-      await queryRunner.manager.save(wallet);
+      const savedWallet = await queryRunner.manager.save(wallet);
 
-      // Commit transaction if both succeed
       await queryRunner.commitTransaction();
+
+      // Generate JWT token upon successful signup
+      const payload = { sub: savedUser.id, email: savedUser.email };
+      const access_token = this.jwtService.sign(payload);
 
       return {
         message: 'Account created successfully with a default USD wallet',
-        userId: user.id,
-        email: user.email,
+        access_token,
+        userId: savedUser.id,
+        email: savedUser.email,
+        walletId: savedWallet.id,
       };
     } catch (error) {
-      // Rollback transaction on failure
       await queryRunner.rollbackTransaction();
       throw error;
     } finally {
-      // Release query runner connection
       await queryRunner.release();
     }
+  }
+
+  async login(loginDto: SignupDto) {
+    const { email, password } = loginDto;
+
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Find the user's wallet ID
+    const wallet = await this.walletRepository.findOne({ where: { userId: user.id } });
+
+    const payload = { sub: user.id, email: user.email };
+    const access_token = this.jwtService.sign(payload);
+
+    return {
+      message: 'Login successful',
+      access_token,
+      userId: user.id,
+      email: user.email,
+      walletId: wallet ? wallet.id : null,
+    };
   }
 }

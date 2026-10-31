@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { WalletModule } from './wallet/wallet.module';
@@ -10,12 +10,18 @@ import { Transaction } from './wallet/transaction.entity';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      url: process.env.DATABASE_URL,
-      entities: [User, Wallet, Transaction],
-      synchronize: true, // Set to false in production
-      ssl: { rejectUnauthorized: false }, // Required for Neon Cloud
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        type: 'postgres',
+        url: configService.get<string>('DATABASE_URL'),
+        entities: [User, Wallet, Transaction],
+        synchronize: true,
+        ssl: {
+          rejectUnauthorized: false, // Required for cloud providers like Neon
+        },
+      }),
     }),
     AuthModule,
     WalletModule,
