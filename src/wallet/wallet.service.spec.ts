@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm'; // <-- 1. Import DataSource
+import { DataSource } from 'typeorm';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { Wallet } from './wallet.entity';
@@ -29,7 +29,7 @@ describe('WalletService (Integration)', () => {
     }).compile();
 
     walletService = module.get<WalletService>(WalletService);
-    dataSource = module.get<DataSource>(DataSource); // <-- 2. Get DataSource instance here if needed
+    dataSource = module.get<DataSource>(DataSource);
   }, 15000);
 
   afterAll(async () => {
@@ -39,31 +39,31 @@ describe('WalletService (Integration)', () => {
   });
 
   beforeEach(async () => {
-    // 3. Use the DataSource instance properly
-    await dataSource.getRepository(Transaction).clear();
-    await dataSource.getRepository(Wallet).clear();
-    await dataSource.getRepository(User).clear();
+    const transactionRepo = dataSource.getRepository(Transaction);
+    const walletRepo = dataSource.getRepository(Wallet);
+    const userRepo = dataSource.getRepository(User);
 
-    const userRepository = dataSource.getRepository(User);
-    const walletRepository = dataSource.getRepository(Wallet);
+    await transactionRepo.clear();
+    await walletRepo.clear();
+    await userRepo.clear();
 
-    const user1 = await userRepository.save({
+    const user1 = await userRepo.save({
       email: 'sender@fintech.com',
       passwordHash: 'hashedpassword',
     });
 
-    const user2 = await userRepository.save({
+    const user2 = await userRepo.save({
       email: 'recipient@fintech.com',
       passwordHash: 'hashedpassword',
     });
 
-    senderWallet = await walletRepository.save({
+    senderWallet = await walletRepo.save({
       balance: 500.00,
       currency: 'USD',
       userId: user1.id,
     });
 
-    recipientWallet = await walletRepository.save({
+    recipientWallet = await walletRepo.save({
       balance: 100.00,
       currency: 'USD',
       userId: user2.id,
@@ -77,7 +77,7 @@ describe('WalletService (Integration)', () => {
     });
 
     expect(result).toBeDefined();
-    expect(result.newBalance).toEqual(750.50);
+    expect(Number(result.newBalance)).toEqual(750.50);
     expect(result.transactionReference).toBeDefined();
   });
 
@@ -98,7 +98,7 @@ describe('WalletService (Integration)', () => {
     });
 
     expect(result).toBeDefined();
-    expect(result.sourceNewBalance).toEqual(300.00);
+    expect(Number(result.sourceNewBalance)).toEqual(300.00);
 
     const updatedRecipient = await dataSource.getRepository(Wallet).findOne({
       where: { id: recipientWallet.id },

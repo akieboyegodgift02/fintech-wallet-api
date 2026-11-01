@@ -4,6 +4,7 @@ import { DepositDto } from './dto/deposit.dto';
 import { TransferDto } from './dto/transfer.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('Wallet')
 @ApiBearerAuth()
@@ -20,6 +21,7 @@ export class WalletController {
     return this.walletService.deposit(depositDto);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60000 } }) // Max five transfer attempts per minute
   @Post('transfer')
   @ApiOperation({ summary: 'Transfer funds between two wallets atomically' })
   @HttpCode(HttpStatus.OK)

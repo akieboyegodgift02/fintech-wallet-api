@@ -1,6 +1,7 @@
 import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SignupDto } from './dto/signup.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('auth')
 export class AuthController {
@@ -11,6 +12,7 @@ export class AuthController {
     return this.authService.signup(signupDto);
   }
 
+  @Throttle({ default: { limit: 3, ttl: 60000 } }) // Max three login attempts per minute
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() loginDto: SignupDto) {
