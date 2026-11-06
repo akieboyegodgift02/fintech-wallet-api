@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
-import { User } from '../users/user.entity';
+import { User, UserStatus } from '../users/user.entity';
 import { Wallet } from '../wallet/wallet.entity';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -48,6 +48,7 @@ export class AuthService {
         currency: 'USD',
         userId: savedUser.id,
       });
+      
       const savedWallet = await queryRunner.manager.save(wallet);
 
       await queryRunner.commitTransaction();
@@ -81,6 +82,10 @@ export class AuthService {
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('Invalid credentials');
     }
 

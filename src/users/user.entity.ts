@@ -1,6 +1,11 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToOne } from 'typeorm';
 import type { Wallet } from '../wallet/wallet.entity';
 
+export enum UserStatus {
+  ACTIVE = 'ACTIVE',
+  SUSPENDED = 'SUSPENDED',
+}
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -12,6 +17,13 @@ export class User {
   @Column()
   passwordHash: string;
 
+  @Column({
+    type: 'simple-enum',
+    enum: UserStatus,
+    default: UserStatus.ACTIVE,
+  })
+  status: UserStatus;
+
   @OneToOne('Wallet', (wallet: Wallet) => wallet.user, { cascade: true })
   wallet: Wallet;
 
@@ -20,4 +32,6 @@ export class User {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  
 }

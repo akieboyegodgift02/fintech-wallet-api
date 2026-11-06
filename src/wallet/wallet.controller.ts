@@ -17,8 +17,10 @@ export class WalletController {
   @ApiOperation({ summary: 'Deposit funds into a wallet' })
   @HttpCode(HttpStatus.OK)
   async deposit(@Body() depositDto: DepositDto, @Req() req) {
-    // Optional: You can verify req.user.userId owns the wallet if desired
-    return this.walletService.deposit(depositDto);
+    return this.walletService.deposit(
+      depositDto,
+      req.user.userId,
+    );
   }
 
   @Throttle({ default: { limit: 5, ttl: 60000 } }) // Max five transfer attempts per minute
@@ -26,6 +28,9 @@ export class WalletController {
   @ApiOperation({ summary: 'Transfer funds between two wallets atomically' })
   @HttpCode(HttpStatus.OK)
   async transfer(@Body() transferDto: TransferDto, @Req() req) {
-    return this.walletService.transfer(transferDto);
+    return this.walletService.transfer(
+      transferDto,
+      req.user.userId,
+    );
   }
 }

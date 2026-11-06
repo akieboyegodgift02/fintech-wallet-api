@@ -1,44 +1,119 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import { DataSource, EntityManager } from 'typeorm';
+import * as crypto from 'crypto';
+
 import { Wallet } from './wallet.entity';
-import { Transaction, TransactionType, TransactionStatus } from './transaction.entity';
+import {
+  Transaction,
+  TransactionType,
+  TransactionStatus,
+  TransactionDirection,
+} from './transaction.entity';
+
 import { DepositDto } from './dto/deposit.dto';
 import { TransferDto } from './dto/transfer.dto';
-import * as crypto from 'crypto';
+
+/**
+ * Money math is done in whole cents (integers) to avoid
+ * floating-point errors like 0.1 + 0.2 = 0.30000000000000004.
+ */
+const toCents = (value: number | string): number =>
+  Math.round(Number(value) * 100);
+
+const fromCents = (cents: number): number => cents / 100;
+
+/** Postgres error codes that are safe to retry: deadlock, serialization failure. */
+const RETRYABLE_PG_CODES = ['40P01', '40001'];
+const MAX_ATTEMPTS = 3;
 
 @Injectable()
 export class WalletService {
-  constructor(
-    @InjectRepository(Wallet)
-    private walletRepository: Repository<Wallet>,
-    @InjectRepository(Transaction)
-    private transactionRepository: Repository<Transaction>,
-    private dataSource: DataSource,
-  ) {}
+  constructor(private readonly dataSource: DataSource) {}
 
-  private getLockOption(driverType: string) {
-    // Pessimistic locking is supported on PostgreSQL/CockroachDB, but not SQLite in tests
-    return driverType === 'postgres' || driverType === 'cockroachdb' || driverType === 'aurora-postgres'
+  /**
+   * PostgreSQL supports pessimistic row-level locking.
+   * Other databases (e.g. SQLite) do not support this TypeORM option.
+   */
+  private getLockOption() {
+    const driverType = this.dataSource.options.type as string;
+
+    return driverType === 'postgres' ||
+      driverType === 'cockroachdb' ||
+      driverType === 'aurora-postgres'
       ? { lock: { mode: 'pessimistic_write' as const } }
       : {};
   }
 
-  async deposit(depositDto: DepositDto) {
+  /**
+   * Runs `work` inside one database transaction (commit on success,
+   * rollback on any error) and retries it if Postgres reports a
+   * deadlock or serialization failure.
+   */
+  private async runInTransaction<T>(
+    work: (manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.dataSource.transaction(work);
+      } catch (error) {
+        const pgError = error as
+          | { code?: string; driverError?: { code?: string } }
+          | undefined;
+        const code = pgError?.code ?? pgError?.driverError?.code;
+        const retryable = RETRYABLE_PG_CODES.includes(code);
+
+        if (!retryable || attempt >= MAX_ATTEMPTS) {
+          throw error;
+        }
+
+        // Small randomized pause so retrying transactions do not collide again.
+        await new Promise((resolve) =>
+          setTimeout(resolve, 50 * attempt + Math.random() * 50),
+        );
+      }
+    }
+  }
+
+  /**
+   * Amount must be a positive number with at most 2 decimal places.
+   * Without this, a negative amount could drain a wallet.
+   */
+  private assertValidAmount(amount: number | string): void {
+    const value = Number(amount);
+
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new BadRequestException('Amount must be greater than zero');
+    }
+
+    if (Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) {
+      throw new BadRequestException(
+        'Amount cannot have more than 2 decimal places',
+      );
+    }
+  }
+
+  /**
+   * Deposit funds into a wallet owned by the authenticated user.
+   *
+   * IMPORTANT:
+   * This currently credits the wallet directly.
+   * A production deposit must first verify successful payment
+   * through a trusted payment provider.
+   */
+  async deposit(depositDto: DepositDto, userId: string) {
     const { walletId, amount } = depositDto;
-    const queryRunner = this.dataSource.createQueryRunner();
 
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    this.assertValidAmount(amount);
 
-    try {
-      const driverType = queryRunner.connection.driver.options.type;
-      const lockOption = this.getLockOption(driverType);
-
-      // 1. Find and lock wallet
-      const wallet = await queryRunner.manager.findOne(Wallet, {
-        where: { id: walletId },
-        ...lockOption,
+    return this.runInTransaction(async (manager) => {
+      // Find and lock the wallet belonging to this user.
+      const wallet = await manager.findOne(Wallet, {
+        where: { id: walletId, userId },
+        ...this.getLockOption(),
       });
 
       if (!wallet) {
@@ -49,64 +124,78 @@ export class WalletService {
         throw new BadRequestException('Wallet is locked for security reasons');
       }
 
-      // 2. Update balance
-      wallet.balance = Number(wallet.balance) + Number(amount);
-      await queryRunner.manager.save(wallet);
+      const newBalance = fromCents(toCents(wallet.balance) + toCents(amount));
+      wallet.balance = newBalance;
 
-      // 3. Record immutable transaction log
-      const transaction = queryRunner.manager.create(Transaction, {
+      await manager.save(wallet);
+
+      const transaction = manager.create(Transaction, {
         amount,
         type: TransactionType.DEPOSIT,
+        direction: TransactionDirection.CREDIT,
         status: TransactionStatus.SUCCESS,
         reference: `DEP-${crypto.randomUUID()}`,
         walletId: wallet.id,
+        balanceAfter: newBalance,
       });
-      await queryRunner.manager.save(transaction);
 
-      await queryRunner.commitTransaction();
+      await manager.save(transaction);
 
       return {
         message: 'Deposit successful',
-        newBalance: wallet.balance,
+        newBalance,
         transactionReference: transaction.reference,
       };
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      throw error;
-    } finally {
-      await queryRunner.release();
-    }
+    });
   }
 
-  async transfer(transferDto: TransferDto) {
+  /**
+   * Transfer funds between two different wallets.
+   *
+   * The authenticated user must own the source wallet.
+   * The recipient wallet can belong to another user.
+   * Both wallets get a ledger row: a DEBIT for the sender and a CREDIT
+   * for the recipient, linked by the same correlationId.
+   */
+  async transfer(transferDto: TransferDto, userId: string) {
     const { sourceWalletId, recipientWalletId, amount } = transferDto;
+
+    this.assertValidAmount(amount);
 
     if (sourceWalletId === recipientWalletId) {
       throw new BadRequestException('Cannot transfer funds to the same wallet');
     }
 
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    return this.runInTransaction(async (manager) => {
+      const lockOption = this.getLockOption();
 
-    try {
-      const driverType = queryRunner.connection.driver.options.type;
-      const lockOption = this.getLockOption(driverType);
-
+      // Always lock wallets in the same order to prevent deadlocks
+      // between opposite transfers (A to B and B to A at the same time).
       const [firstId, secondId] = [sourceWalletId, recipientWalletId].sort();
 
-      const firstWallet = await queryRunner.manager.findOne(Wallet, {
-        where: { id: firstId },
+      // The source wallet must belong to the authenticated user.
+      const firstWallet = await manager.findOne(Wallet, {
+        where:
+          firstId === sourceWalletId
+            ? { id: firstId, userId }
+            : { id: firstId },
         ...lockOption,
       });
 
-      const secondWallet = await queryRunner.manager.findOne(Wallet, {
-        where: { id: secondId },
+      const secondWallet = await manager.findOne(Wallet, {
+        where:
+          secondId === sourceWalletId
+            ? { id: secondId, userId }
+            : { id: secondId },
         ...lockOption,
       });
 
-      const sourceWallet = sourceWalletId === firstId ? firstWallet : secondWallet;
-      const recipientWallet = recipientWalletId === firstId ? firstWallet : secondWallet;
+      // Restore the original sender/recipient roles.
+      const sourceWallet =
+        sourceWalletId === firstId ? firstWallet : secondWallet;
+
+      const recipientWallet =
+        recipientWalletId === firstId ? firstWallet : secondWallet;
 
       if (!sourceWallet || !recipientWallet) {
         throw new NotFoundException('Source or recipient wallet not found');
@@ -116,40 +205,67 @@ export class WalletService {
         throw new BadRequestException('One or both wallets are locked');
       }
 
-      if (Number(sourceWallet.balance) < Number(amount)) {
+      if (sourceWallet.currency !== recipientWallet.currency) {
+        throw new BadRequestException(
+          'Cannot transfer between wallets with different currencies',
+        );
+      }
+
+      const amountCents = toCents(amount);
+
+      if (toCents(sourceWallet.balance) < amountCents) {
         throw new BadRequestException('Insufficient funds');
       }
 
-      // Execute transfer
-      sourceWallet.balance = Number(sourceWallet.balance) - Number(amount);
-      recipientWallet.balance = Number(recipientWallet.balance) + Number(amount);
+      const sourceNewBalance = fromCents(
+        toCents(sourceWallet.balance) - amountCents,
+      );
+      const recipientNewBalance = fromCents(
+        toCents(recipientWallet.balance) + amountCents,
+      );
 
-      await queryRunner.manager.save(sourceWallet);
-      await queryRunner.manager.save(recipientWallet);
+      sourceWallet.balance = sourceNewBalance;
+      recipientWallet.balance = recipientNewBalance;
 
-      // Log transaction for sender
-      const senderTx = queryRunner.manager.create(Transaction, {
+      await manager.save(sourceWallet);
+      await manager.save(recipientWallet);
+
+      const correlationId = crypto.randomUUID();
+
+      // Sender's ledger row: money going out.
+      const outgoing = manager.create(Transaction, {
         amount,
         type: TransactionType.TRANSFER,
+        direction: TransactionDirection.DEBIT,
         status: TransactionStatus.SUCCESS,
-        reference: `TRF-OUT-${crypto.randomUUID()}`,
+        reference: `TRF-OUT-${correlationId}`,
         walletId: sourceWallet.id,
-        recipientWalletId: recipientWallet.id,
+        counterpartyWalletId: recipientWallet.id,
+        balanceAfter: sourceNewBalance,
+        correlationId,
       });
-      await queryRunner.manager.save(senderTx);
 
-      await queryRunner.commitTransaction();
+      // Recipient's ledger row: money coming in.
+      const incoming = manager.create(Transaction, {
+        amount,
+        type: TransactionType.TRANSFER,
+        direction: TransactionDirection.CREDIT,
+        status: TransactionStatus.SUCCESS,
+        reference: `TRF-IN-${correlationId}`,
+        walletId: recipientWallet.id,
+        counterpartyWalletId: sourceWallet.id,
+        balanceAfter: recipientNewBalance,
+        correlationId,
+      });
+
+      await manager.save(outgoing);
+      await manager.save(incoming);
 
       return {
         message: 'Transfer successful',
-        sourceNewBalance: sourceWallet.balance,
-        reference: senderTx.reference,
+        sourceNewBalance,
+        reference: outgoing.reference,
       };
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      throw error;
-    } finally {
-      await queryRunner.release();
-    }
+    });
   }
 }
